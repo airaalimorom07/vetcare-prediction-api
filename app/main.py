@@ -11,16 +11,17 @@ import os
 import random
 import requests
 import re
+import traceback
 
 app = FastAPI(title="Pet Disease Classifier API", version="1.0.0")
 
-# CORS middleware
+# Add CORS middleware to allow requests from your PHP application
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins during development
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Global variables
@@ -243,7 +244,6 @@ def load_model():
         except Exception as e:
             print(f"❌ Error loading model weights: {e}")
             # Try to get more detailed error info
-            import traceback
             print(f"🔍 Detailed error: {traceback.format_exc()}")
             return False
         
@@ -263,7 +263,6 @@ def load_model():
         
     except Exception as e:
         print(f"❌ Error loading model: {e}")
-        import traceback
         print(f"🔍 Detailed traceback: {traceback.format_exc()}")
         print("⚠️  Running in demo mode")
         return False
