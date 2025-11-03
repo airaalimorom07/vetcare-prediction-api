@@ -10,18 +10,16 @@ import json
 import os
 import random
 import requests
-import re
-import traceback
 
 app = FastAPI(title="Pet Disease Classifier API", version="1.0.0")
 
-# Add CORS middleware to allow requests from your PHP application
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins during development
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global variables
@@ -37,126 +35,37 @@ transform = transforms.Compose([
                         std=[0.229, 0.224, 0.225])
 ])
 
-# Correct Google Drive direct download URLs
-MODEL_URLS = {
-    'proper_medical_model.pth': 'https://drive.google.com/uc?export=download&id=1whaZqfTGHg_60w4Yxct3x67N9JDFieXp',
-    'proper_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1ym9R9KD6CBTUf9fVQuJWpPpEFQ00gDPq',
-    'real_pet_disease_model.pth': 'https://drive.google.com/uc?export=download&id=1x4l-FHJ10q8JD20Mxmaff-WILkIgQ_td',
-    'real_class_mapping.json': 'https://drive.google.com/uc?export=download&id=16WXwVVHAcny7yGTXeih9cPm4FL33p_SV'
-}
-
-def download_file_from_gdrive(file_id, destination):
-    """Download file from Google Drive with proper handling"""
-    URL = "https://drive.google.com/uc?export=download"
-    
-    session = requests.Session()
-    
-    # Initial download request
-    response = session.get(URL, params={'id': file_id}, stream=True)
-    
-    # Check if we got a confirmation page for large files
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            # If confirmation needed, add confirm parameter
-            params = {'id': file_id, 'confirm': value}
-            response = session.get(URL, params=params, stream=True)
-            break
-    
-    # Check if response is successful
-    if response.status_code != 200:
-        print(f"   ❌ HTTP Error: {response.status_code}")
-        return False
-    
-    # Check if we got an HTML page (error)
-    content_type = response.headers.get('content-type', '')
-    if 'text/html' in content_type:
-        # Check for error message in HTML
-        if 'Google Drive - Virus scan warning' in response.text:
-            print("   ⚠️  Google Drive virus scan warning - cannot download automatically")
-            return False
-        elif 'Quota exceeded' in response.text:
-            print("   ❌ Google Drive quota exceeded")
-            return False
-        else:
-            print("   ❌ Got HTML page instead of file")
-            return False
-    
-    # Get file size from headers
-    total_size = int(response.headers.get('content-length', 0))
-    
-    # Download the file
-    with open(destination, 'wb') as f:
-        downloaded_size = 0
-        for chunk in response.iter_content(chunk_size=32768):
-            if chunk:  # filter out keep-alive new chunks
-                f.write(chunk)
-                downloaded_size += len(chunk)
-    
-    # Verify download
-    if os.path.exists(destination) and os.path.getsize(destination) > 0:
-        print(f"   ✅ Downloaded {destination} ({os.path.getsize(destination)} bytes)")
-        return True
-    else:
-        print(f"   ❌ Download failed or file is empty")
-        if os.path.exists(destination):
-            os.remove(destination)
-        return False
-
-def extract_file_id_from_url(url):
-    """Extract file ID from Google Drive URL"""
-    # Handle different Google Drive URL formats
-    patterns = [
-        r'/d/([a-zA-Z0-9_-]+)',
-        r'id=([a-zA-Z0-9_-]+)',
-        r'file/d/([a-zA-Z0-9_-]+)'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    
-    return None
-
 def download_model_files():
     """Download model files from Google Drive if they don't exist"""
     print("🔄 Starting model file download...")
-    os.makedirs('models', exist_ok=True)
+    os.makedirs('models', exist_ok=True)  # Changed to 'models' to match local
     
-    all_success = True
+    # Your Google Drive direct download links
+    model_files = {
+        'models/proper_medical_model.pth': 'https://drive.google.com/file/d/1whaZqfTGHg_60w4Yxct3x67N9JDFieXp/view?usp=drive_link',
+        'models/proper_class_mapping.json': 'https://drive.google.com/file/d/1ym9R9KD6CBTUf9fVQuJWpPpEFQ00gDPq/view?usp=drive_link',
+        'models/real_pet_disease_model.pth': 'https://drive.google.com/file/d/1x4l-FHJ10q8JD20Mxmaff-WILkIgQ_td/view?usp=drive_link',
+        'models/real_class_mapping.json': 'https://drive.google.com/file/d/16WXwVVHAcny7yGTXeih9cPm4FL33p_SV/view?usp=drive_link'
+    }
     
-    for filename, url in MODEL_URLS.items():
-        file_path = f'models/{filename}'
-        print(f"📥 Checking {filename}...")
-        
-        if os.path.exists(file_path):
+    for file_path, url in model_files.items():
+        print(f"📥 Checking {file_path}...")
+        if not os.path.exists(file_path):
+            print(f"   Downloading from {url}...")
+            try:
+                response = requests.get(url)
+                if response.status_code == 200:
+                    with open(file_path, 'wb') as f:
+                        f.write(response.content)
+                    file_size = os.path.getsize(file_path)
+                    print(f"   ✅ Downloaded {file_path} ({file_size} bytes)")
+                else:
+                    print(f"   ❌ Failed to download {file_path}: HTTP {response.status_code}")
+            except Exception as e:
+                print(f"   ❌ Error downloading {file_path}: {e}")
+        else:
             file_size = os.path.getsize(file_path)
-            print(f"   ✅ Already exists ({file_size} bytes)")
-            
-            # Validate existing files
-            if filename.endswith('.json'):
-                try:
-                    with open(file_path, 'r') as f:
-                        json.load(f)
-                    print(f"   ✅ Valid JSON file")
-                except json.JSONDecodeError:
-                    print(f"   ❌ Corrupted JSON, redownloading...")
-                    os.remove(file_path)
-                    all_success = False
-            continue
-        
-        print(f"   Downloading from {url}...")
-        
-        # Extract file ID and download
-        file_id = extract_file_id_from_url(url)
-        if not file_id:
-            print(f"   ❌ Could not extract file ID from URL")
-            all_success = False
-            continue
-            
-        success = download_file_from_gdrive(file_id, file_path)
-        if not success:
-            all_success = False
+            print(f"   ✅ {file_path} already exists ({file_size} bytes)")
     
     # List all files in models directory
     print("📁 Files in models directory:")
@@ -165,105 +74,76 @@ def download_model_files():
             file_path = os.path.join('models', file)
             size = os.path.getsize(file_path)
             print(f"   - {file}: {size} bytes")
-            
-            # Validate JSON files
-            if file.endswith('.json'):
-                try:
-                    with open(file_path, 'r') as f:
-                        json.load(f)
-                    print(f"   ✅ {file} is valid JSON")
-                except json.JSONDecodeError as e:
-                    print(f"   ❌ {file} is invalid JSON: {e}")
-                    all_success = False
     else:
-        print("   ❌ Models directory doesn't exist!")
-        all_success = False
-    
-    return all_success
+        print("   Models directory doesn't exist!")
 
 def load_model():
     """Load the trained model"""
     global model, class_mapping
     
     try:
-        # Check if we have the required files for proper medical model
-        model_path = 'models/proper_medical_model.pth'
-        class_mapping_path = 'models/proper_class_mapping.json'
+        # Try to load the PROPER medical model first
+        model_path = 'models/proper_medical_model.pth'  # Changed to 'models'
+        class_mapping_path = 'models/proper_class_mapping.json'  # Changed to 'models'
         
+        # If proper model doesn't exist, fall back to real model
         if not os.path.exists(model_path):
-            print("❌ Proper medical model file not found")
+            model_path = 'models/real_pet_disease_model.pth'  # Changed to 'models'
+            class_mapping_path = 'models/real_class_mapping.json'  # Changed to 'models'
+            print("⚠️  Proper medical model not found, using real model")
+        else:
+            print("✅ Proper medical model found, loading...")
+        
+        # If real model doesn't exist, fall back to demo model
+        if not os.path.exists(model_path):
+            model_path = 'models/pet_disease_model.pth'  # Changed to 'models'
+            class_mapping_path = 'models/class_mapping.json'  # Changed to 'models'
+            print("⚠️  Real model not found, using demo model")
+        
+        # Check if model files exist
+        if not os.path.exists(model_path):
+            print("❌ No model file found. Running in demo mode.")
             return False
         
-        if not os.path.exists(class_mapping_path):
-            print("❌ Proper class mapping file not found")
-            return False
-        
-        print("✅ Found proper medical model files, loading...")
-        
-        # Validate and load class mapping
-        try:
-            with open(class_mapping_path, 'r') as f:
-                class_mapping = json.load(f)
-            print("✅ Class mapping loaded successfully")
-        except json.JSONDecodeError as e:
-            print(f"❌ Error loading class mapping: {e}")
-            return False
+        # Load class mapping
+        with open(class_mapping_path, 'r') as f:
+            class_mapping = json.load(f)
         
         # Get number of classes
         num_classes = len(class_mapping['idx_to_label'])
-        print(f"📊 Number of classes: {num_classes}")
-        print(f"📋 Classes: {list(class_mapping['label_to_idx'].keys())}")
         
         # Create model - Use EfficientNet for proper medical model
-        print("🔬 Creating EfficientNet model...")
-        model = models.efficientnet_b0(pretrained=False)
-        
-        # Update the classifier for our number of classes
-        in_features = model.classifier[1].in_features
-        model.classifier[1] = nn.Linear(in_features, num_classes)
-        print(f"🔄 Updated classifier for {num_classes} classes")
+        if 'proper' in model_path:
+            model = models.efficientnet_b0(pretrained=False)  # FIXED: pretrained=False like local
+            model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+            print("🔬 Using EfficientNet (medical optimized)")
+        else:
+            # Fallback to ResNet18 for other models
+            model = models.resnet18(pretrained=False)  # FIXED: pretrained=False like local
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
+            print("🔧 Using ResNet18 (compatible)")
         
         # Load trained weights
-        try:
-            # Check if model file is valid
-            model_size = os.path.getsize(model_path)
-            print(f"📦 Model file size: {model_size} bytes")
-            
-            if model_size < 1000:  # Too small to be a real model
-                print(f"❌ Model file seems too small ({model_size} bytes)")
-                return False
-                
-            print("🔄 Loading model weights...")
-            # Use map_location to handle device compatibility
-            state_dict = torch.load(model_path, map_location=device)
-            model.load_state_dict(state_dict)
-            model.to(device)
-            model.eval()
-            print("✅ Model weights loaded successfully!")
-            
-        except Exception as e:
-            print(f"❌ Error loading model weights: {e}")
-            # Try to get more detailed error info
-            print(f"🔍 Detailed error: {traceback.format_exc()}")
-            return False
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        model.eval()
         
-        # Test the model with a dummy input to make sure it works
-        try:
-            print("🧪 Testing model with dummy input...")
-            with torch.no_grad():
-                dummy_input = torch.randn(1, 3, 224, 224).to(device)
-                output = model(dummy_input)
-                print(f"✅ Model test passed! Output shape: {output.shape}")
-        except Exception as e:
-            print(f"❌ Model test failed: {e}")
-            return False
+        print("✅ Model loaded successfully!")
+        print(f"📊 Classes: {list(class_mapping['label_to_idx'].keys())}")
         
-        print("💾 Using: PROPER MEDICAL model")
+        # Determine which model is being used
+        if 'proper' in model_path:
+            model_type = "PROPER MEDICAL"
+        elif 'real' in model_path:
+            model_type = "REAL" 
+        else:
+            model_type = "DEMO"
+            
+        print(f"💾 Using: {model_type} model")
         return True
         
     except Exception as e:
         print(f"❌ Error loading model: {e}")
-        print(f"🔍 Detailed traceback: {traceback.format_exc()}")
         print("⚠️  Running in demo mode")
         return False
 
@@ -330,19 +210,8 @@ def get_demo_prediction(filename):
 async def startup_event():
     """Load model when API starts"""
     print("🚀 Starting Pet Disease Classifier API...")
-    
-    # Download models first
-    download_success = download_model_files()
-    
-    if download_success:
-        print("✅ All models downloaded successfully, loading...")
-        model_loaded = load_model()
-        if model_loaded:
-            print("🎉 API ready with real model!")
-        else:
-            print("⚠️  API running in demo mode")
-    else:
-        print("❌ Model download failed, running in demo mode")
+    download_model_files()  # Download models first
+    load_model()  # Then load them
 
 @app.get("/")
 def root():
@@ -382,8 +251,7 @@ def model_info():
         "model_architecture": "EfficientNet" if 'efficientnet' in str(model.__class__).lower() else "ResNet",
         "num_classes": len(class_mapping['idx_to_label']) if class_mapping else 0,
         "classes_loaded": list(class_mapping['label_to_idx'].keys()) if class_mapping else [],
-        "pretrained_used": False,
-        "source": "Google Drive"
+        "pretrained_used": False  # This should now be False to match local
     }
     
     return {
@@ -394,6 +262,8 @@ def model_info():
 @app.get("/debug-files")
 def debug_files():
     """Debug file system"""
+    import os
+    
     result = {
         "current_directory": os.getcwd(),
         "files_in_root": os.listdir('.'),
@@ -403,7 +273,8 @@ def debug_files():
     if os.path.exists('models'):
         result["files_in_models"] = os.listdir('models')
         # Check each model file
-        for file in ['proper_medical_model.pth', 'proper_class_mapping.json']:
+        model_files = ['proper_medical_model.pth', 'proper_class_mapping.json']
+        for file in model_files:
             path = f'models/{file}'
             result[file] = {
                 "exists": os.path.exists(path),
@@ -411,21 +282,6 @@ def debug_files():
             }
     
     return result
-
-@app.get("/download-status")
-def download_status():
-    """Check download status of all model files"""
-    status = {}
-    for filename, url in MODEL_URLS.items():
-        file_path = f'models/{filename}'
-        exists = os.path.exists(file_path)
-        status[filename] = {
-            "exists": exists,
-            "size": os.path.getsize(file_path) if exists else 0,
-            "url": url
-        }
-    
-    return status
 
 @app.get("/classes")
 def get_classes():
@@ -490,13 +346,17 @@ async def predict(file: UploadFile = File(...)):
                 "class_id": int(idx.item())
             })
         
+        # Determine message based on model type
+        model_type = "PROPER MEDICAL" if 'efficientnet' in str(model.__class__).lower() else "REAL"
+        message = f"{model_type} model prediction - trained on medical images"
+        
         return {
             "success": True,
             "predictions": predictions,
             "primary_prediction": predictions[0],
             "file_name": file.filename,
             "file_type": file.content_type,
-            "message": "PROPER MEDICAL model prediction - trained on medical images"
+            "message": message
         }
         
     except Exception as e:
