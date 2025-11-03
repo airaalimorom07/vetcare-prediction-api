@@ -185,14 +185,19 @@ def load_model():
     global model, class_mapping
     
     try:
-        # Try to load the PROPER medical model first
+        # Check if we have the required files for proper medical model
         model_path = 'models/proper_medical_model.pth'
         class_mapping_path = 'models/proper_class_mapping.json'
         
-        # Check if files exist and are valid
-        if not os.path.exists(model_path) or not os.path.exists(class_mapping_path):
-            print("❌ Proper medical model files not found")
+        if not os.path.exists(model_path):
+            print("❌ Proper medical model file not found")
             return False
+        
+        if not os.path.exists(class_mapping_path):
+            print("❌ Proper class mapping file not found")
+            return False
+        
+        print("✅ Found proper medical model files, loading...")
         
         # Validate and load class mapping
         try:
@@ -206,34 +211,60 @@ def load_model():
         # Get number of classes
         num_classes = len(class_mapping['idx_to_label'])
         print(f"📊 Number of classes: {num_classes}")
+        print(f"📋 Classes: {list(class_mapping['label_to_idx'].keys())}")
         
         # Create model - Use EfficientNet for proper medical model
+        print("🔬 Creating EfficientNet model...")
         model = models.efficientnet_b0(pretrained=False)
-        model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
-        print("🔬 Using EfficientNet (medical optimized)")
+        
+        # Update the classifier for our number of classes
+        in_features = model.classifier[1].in_features
+        model.classifier[1] = nn.Linear(in_features, num_classes)
+        print(f"🔄 Updated classifier for {num_classes} classes")
         
         # Load trained weights
         try:
             # Check if model file is valid
             model_size = os.path.getsize(model_path)
+            print(f"📦 Model file size: {model_size} bytes")
+            
             if model_size < 1000:  # Too small to be a real model
                 print(f"❌ Model file seems too small ({model_size} bytes)")
                 return False
                 
-            model.load_state_dict(torch.load(model_path, map_location=device))
+            print("🔄 Loading model weights...")
+            # Use map_location to handle device compatibility
+            state_dict = torch.load(model_path, map_location=device)
+            model.load_state_dict(state_dict)
             model.to(device)
             model.eval()
             print("✅ Model weights loaded successfully!")
+            
         except Exception as e:
             print(f"❌ Error loading model weights: {e}")
+            # Try to get more detailed error info
+            import traceback
+            print(f"🔍 Detailed error: {traceback.format_exc()}")
             return False
         
-        print(f"📊 Classes: {list(class_mapping['label_to_idx'].keys())}")
+        # Test the model with a dummy input to make sure it works
+        try:
+            print("🧪 Testing model with dummy input...")
+            with torch.no_grad():
+                dummy_input = torch.randn(1, 3, 224, 224).to(device)
+                output = model(dummy_input)
+                print(f"✅ Model test passed! Output shape: {output.shape}")
+        except Exception as e:
+            print(f"❌ Model test failed: {e}")
+            return False
+        
         print("💾 Using: PROPER MEDICAL model")
         return True
         
     except Exception as e:
         print(f"❌ Error loading model: {e}")
+        import traceback
+        print(f"🔍 Detailed traceback: {traceback.format_exc()}")
         print("⚠️  Running in demo mode")
         return False
 
