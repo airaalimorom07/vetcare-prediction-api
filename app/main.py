@@ -210,6 +210,8 @@ def get_demo_prediction(filename):
 async def startup_event():
     """Load model when API starts"""
     print("🚀 Starting Pet Disease Classifier API...")
+    print(f"🌐 Environment: {os.getenv('ENVIRONMENT', 'production')}")
+    print(f"🔧 PORT: {os.getenv('PORT', '8000')}")
     download_model_files()  # Download models first
     load_model()  # Then load them
 
@@ -218,7 +220,8 @@ def root():
     return {
         "message": "Pet Disease Classifier API", 
         "status": "running",
-        "model_loaded": model is not None
+        "model_loaded": model is not None,
+        "environment": os.getenv("ENVIRONMENT", "production")
     }
 
 @app.get("/health")
@@ -237,7 +240,8 @@ def health_check():
         "model_loaded": model is not None,
         "model_type": model_type,
         "device": str(device),
-        "classes_available": len(class_mapping['label_to_idx']) if class_mapping else 27
+        "classes_available": len(class_mapping['label_to_idx']) if class_mapping else 27,
+        "environment": os.getenv("ENVIRONMENT", "production")
     }
 
 @app.get("/model-info")
@@ -393,4 +397,13 @@ async def predict_batch(files: list[UploadFile] = File(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    
+    # Get port from environment variable (Railway provides this)
+    port = int(os.getenv("PORT", 8000))
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0",  # Important for Railway - listen on all interfaces
+        port=port,
+        reload=os.getenv("ENVIRONMENT") == "development"  # Auto-reload only in development
+    )
