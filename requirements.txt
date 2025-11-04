@@ -6,4 +6,6 @@ torch==2.1.0+cpu
 torchvision==0.16.0+cpu
 requests>=2.28.0
 numpy>=1.21.0,<2.0.0
+efficientnet-pytorch==0.7.1
+
 --extra-index-url https://download.pytorch.org/whl/cpu
