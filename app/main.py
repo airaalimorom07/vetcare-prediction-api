@@ -10,6 +10,7 @@ import json
 import os
 import random
 import requests
+from efficientnet_pytorch import EfficientNet  # Add this import
 
 app = FastAPI(title="Pet Disease Classifier API", version="1.0.0")
 
@@ -35,6 +36,33 @@ transform = transforms.Compose([
                         std=[0.229, 0.224, 0.225])
 ])
 
+def verify_model_file(model_path):
+    """Verify if model file is valid"""
+    import os
+    if not os.path.exists(model_path):
+        return False
+    
+    file_size = os.path.getsize(model_path)
+    print(f"📏 Model file size: {file_size} bytes")
+    
+    # A proper model should be at least 5MB
+    if file_size < 5 * 1024 * 1024:  # 5MB
+        print("❌ Model file appears corrupted - too small")
+        return False
+    
+    try:
+        checkpoint = torch.load(model_path, map_location='cpu')
+        if 'state_dict' in checkpoint:
+            print("✅ Model contains state_dict")
+        elif 'model' in checkpoint:
+            print("✅ Model contains model key")
+        else:
+            print("✅ Model appears to be direct state_dict")
+        return True
+    except Exception as e:
+        print(f"❌ Cannot load model file: {e}")
+        return False
+
 def download_model_files():
     """Download model files from Google Drive if they don't exist"""
     print("🔄 Starting model file download...")
@@ -50,7 +78,7 @@ def download_model_files():
     
     for file_path, url in model_files.items():
         print(f"📥 Checking {file_path}...")
-        if not os.path.exists(file_path):
+        if not os.path.exists(file_path) or os.path.getsize(file_path) < 100:
             print(f"   Downloading from {url}...")
             try:
                 # Handle Google Drive virus scan warning for large files
@@ -89,6 +117,10 @@ def download_model_files():
                     
                     file_size = os.path.getsize(file_path)
                     print(f"   ✅ Downloaded {file_path} ({file_size} bytes)")
+                    
+                    # Verify the downloaded file
+                    if '.pth' in file_path:
+                        verify_model_file(file_path)
                 else:
                     print(f"   ❌ Failed to download {file_path}: HTTP {response.status_code}")
                     # Create empty file as placeholder
@@ -114,17 +146,88 @@ def download_model_files():
     else:
         print("   Models directory doesn't exist!")
 
+def load_efficientnet_model(model_path, num_classes):
+    """Load EfficientNet model with proper architecture"""
+    try:
+        # Create EfficientNet model
+        model = EfficientNet.from_name('efficientnet-b0')
+        model._fc = nn.Linear(model._fc.in_features, num_classes)
+        
+        # Load state dict
+        checkpoint = torch.load(model_path, map_location=device)
+        
+        # Handle different checkpoint formats
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        elif 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+        
+        # Remove 'module.' prefix if present (from DataParallel training)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k.replace('module.', '')  # remove 'module.' if present
+            new_state_dict[name] = v
+            
+        # Load with strict=False to handle architecture differences
+        model.load_state_dict(new_state_dict, strict=False)
+        model.to(device)
+        model.eval()
+        
+        print("✅ EfficientNet model loaded successfully!")
+        return model
+        
+    except Exception as e:
+        print(f"❌ Error loading EfficientNet model: {e}")
+        return None
+
+def load_resnet_model(model_path, num_classes):
+    """Load ResNet model with proper architecture"""
+    try:
+        # Create ResNet18 model
+        model = models.resnet18(pretrained=False)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+        
+        # Load state dict
+        checkpoint = torch.load(model_path, map_location=device)
+        
+        # Handle different checkpoint formats
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        elif 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+            
+        # Remove 'module.' prefix if present
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k.replace('module.', '')
+            new_state_dict[name] = v
+            
+        model.load_state_dict(new_state_dict, strict=False)
+        model.to(device)
+        model.eval()
+        
+        print("✅ ResNet model loaded successfully!")
+        return model
+        
+    except Exception as e:
+        print(f"❌ Error loading ResNet model: {e}")
+        return None
+
 def load_model():
     """Load the trained model"""
     global model, class_mapping
     
     try:
-        # Try to load the PROPER medical model first
+        # Try to load the PROPER medical model first (EfficientNet)
         model_path = 'models/proper_medical_model.pth'
         class_mapping_path = 'models/proper_class_mapping.json'
         
-        # Check if files are valid (not empty)
-        if (os.path.exists(model_path) and os.path.getsize(model_path) > 100 and
+        # Check if files are valid
+        if (os.path.exists(model_path) and verify_model_file(model_path) and
             os.path.exists(class_mapping_path) and os.path.getsize(class_mapping_path) > 10):
             
             print("✅ Proper medical model found, loading...")
@@ -136,32 +239,28 @@ def load_model():
             # Get number of classes
             num_classes = len(class_mapping['idx_to_label'])
             
-            # Create model - Use EfficientNet for proper medical model
-            model = models.efficientnet_b0(pretrained=False)
-            model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
             print("🔬 Using EfficientNet (medical optimized)")
+            model = load_efficientnet_model(model_path, num_classes)
             
-            # Load trained weights
-            model.load_state_dict(torch.load(model_path, map_location=device))
-            model.to(device)
-            model.eval()
-            
-            print("✅ Model loaded successfully!")
-            print(f"📊 Classes: {list(class_mapping['label_to_idx'].keys())}")
-            return True
-            
+            if model is not None:
+                print("✅ Medical model loaded successfully!")
+                print(f"📊 Classes: {list(class_mapping['label_to_idx'].keys())}")
+                return True
+            else:
+                print("❌ Failed to load medical model")
+                
         else:
             print("❌ Proper medical model files are invalid or empty")
             
     except Exception as e:
         print(f"❌ Error loading proper medical model: {e}")
     
-    # Try to load the REAL model as fallback
+    # Try to load the REAL model as fallback (EfficientNet)
     try:
         model_path = 'models/real_pet_disease_model.pth'
         class_mapping_path = 'models/real_class_mapping.json'
         
-        if (os.path.exists(model_path) and os.path.getsize(model_path) > 1000 and
+        if (os.path.exists(model_path) and verify_model_file(model_path) and
             os.path.exists(class_mapping_path) and os.path.getsize(class_mapping_path) > 10):
             
             print("🔄 Falling back to real model...")
@@ -173,19 +272,21 @@ def load_model():
             # Get number of classes
             num_classes = len(class_mapping['idx_to_label'])
             
-            # Create ResNet18 model
-            model = models.resnet18(pretrained=False)
-            model.fc = nn.Linear(model.fc.in_features, num_classes)
-            print("🔧 Using ResNet18 (real model)")
+            # Try EfficientNet first (since your model was trained on it)
+            print("🔬 Trying EfficientNet architecture...")
+            model = load_efficientnet_model(model_path, num_classes)
             
-            # Load trained weights
-            model.load_state_dict(torch.load(model_path, map_location=device))
-            model.to(device)
-            model.eval()
+            # If EfficientNet fails, try ResNet
+            if model is None:
+                print("🔄 Trying ResNet architecture...")
+                model = load_resnet_model(model_path, num_classes)
             
-            print("✅ Real model loaded successfully!")
-            return True
-            
+            if model is not None:
+                print("✅ Real model loaded successfully!")
+                return True
+            else:
+                print("❌ Failed to load real model with any architecture")
+                
         else:
             print("❌ Real model files are invalid or empty")
             
@@ -194,6 +295,23 @@ def load_model():
     
     print("⚠️  Running in demo mode - no valid model files found")
     return False
+
+def predict_with_confidence(image_tensor, confidence_threshold=0.6):
+    """Make prediction with confidence checking"""
+    with torch.no_grad():
+        outputs = model(image_tensor)
+        probabilities = torch.nn.functional.softmax(outputs, dim=1)
+        confidence, predicted = torch.max(probabilities, 1)
+        confidence = confidence.item()
+        
+        class_idx = predicted.item()
+        class_name = class_mapping['idx_to_label'].get(str(class_idx), "Unknown")
+        
+        # If confidence is too low, mark as uncertain
+        if confidence < confidence_threshold:
+            return "Uncertain - Low Confidence", confidence, class_idx
+        
+        return class_name, confidence, class_idx
 
 def get_demo_prediction(filename):
     """Generate demo predictions when model isn't loaded"""
@@ -336,10 +454,31 @@ def debug_files():
             result[file] = {
                 "exists": os.path.exists(path),
                 "size": os.path.getsize(path) if os.path.exists(path) else 0,
-                "valid": os.path.getsize(path) > 100 if os.path.exists(path) else False
+                "valid": verify_model_file(path) if os.path.exists(path) else False
             }
     
     return result
+
+@app.get("/model-diagnostic")
+def model_diagnostic():
+    """Detailed model diagnostic information"""
+    model_path = "models/real_pet_disease_model.pth"
+    
+    try:
+        if os.path.exists(model_path):
+            checkpoint = torch.load(model_path, map_location='cpu')
+            return {
+                "file_exists": True,
+                "file_size": os.path.getsize(model_path),
+                "file_valid": verify_model_file(model_path),
+                "checkpoint_keys": list(checkpoint.keys()) if isinstance(checkpoint, dict) else "Direct state_dict",
+                "model_loaded": model is not None,
+                "model_architecture": model.__class__.__name__ if model else "None"
+            }
+        else:
+            return {"error": "Model file not found", "file_exists": False}
+    except Exception as e:
+        return {"error": str(e), "file_exists": os.path.exists(model_path)}
 
 @app.get("/classes")
 def get_classes():
@@ -393,14 +532,14 @@ async def predict(file: UploadFile = File(...)):
         image = Image.open(io.BytesIO(contents)).convert('RGB')
         input_tensor = transform(image).unsqueeze(0).to(device)
         
-        # Make real prediction
+        # Make real prediction with confidence checking
+        primary_class, confidence, class_idx = predict_with_confidence(input_tensor)
+        
+        # Get top 5 predictions
         with torch.no_grad():
             outputs = model(input_tensor)
             probabilities = torch.nn.functional.softmax(outputs, dim=1)
-            confidence, predicted_idx = torch.max(probabilities, 1)
-        
-        # Get top 5 predictions
-        top5_probs, top5_indices = torch.topk(probabilities, min(5, len(class_mapping['idx_to_label'])))
+            top5_probs, top5_indices = torch.topk(probabilities, min(5, len(class_mapping['idx_to_label'])))
         
         predictions = []
         for prob, idx in zip(top5_probs[0], top5_indices[0]):
@@ -412,8 +551,12 @@ async def predict(file: UploadFile = File(...)):
             })
         
         # Determine message based on model type
-        model_type = "PROPER MEDICAL" if 'efficientnet' in str(model.__class__).lower() else "REAL"
-        message = f"{model_type} model prediction - trained on medical images"
+        model_type = "EfficientNet" if 'efficientnet' in str(model.__class__).lower() else "ResNet"
+        message = f"{model_type} model prediction"
+        
+        # Add confidence warning if low
+        if confidence < 0.6:
+            message += " - Low confidence prediction"
         
         return {
             "success": True,
@@ -422,7 +565,8 @@ async def predict(file: UploadFile = File(...)):
             "file_name": file.filename,
             "file_type": file.content_type,
             "message": message,
-            "demo_mode": False
+            "demo_mode": False,
+            "confidence_warning": confidence < 0.6
         }
         
     except Exception as e:
