@@ -10,7 +10,6 @@ import json
 import os
 import random
 import requests
-from efficientnet_pytorch import EfficientNet  # Add this import
 
 app = FastAPI(title="Pet Disease Classifier API", version="1.0.0")
 
@@ -52,10 +51,13 @@ def verify_model_file(model_path):
     
     try:
         checkpoint = torch.load(model_path, map_location='cpu')
-        if 'state_dict' in checkpoint:
-            print("✅ Model contains state_dict")
-        elif 'model' in checkpoint:
-            print("✅ Model contains model key")
+        if isinstance(checkpoint, dict):
+            if 'state_dict' in checkpoint:
+                print("✅ Model contains state_dict")
+            elif 'model' in checkpoint:
+                print("✅ Model contains model key")
+            else:
+                print("✅ Model appears to be state_dict")
         else:
             print("✅ Model appears to be direct state_dict")
         return True
@@ -147,20 +149,23 @@ def download_model_files():
         print("   Models directory doesn't exist!")
 
 def load_efficientnet_model(model_path, num_classes):
-    """Load EfficientNet model with proper architecture"""
+    """Load EfficientNet model using torchvision"""
     try:
-        # Create EfficientNet model
-        model = EfficientNet.from_name('efficientnet-b0')
-        model._fc = nn.Linear(model._fc.in_features, num_classes)
+        # Create EfficientNet model using torchvision
+        model = models.efficientnet_b0(pretrained=False)
+        model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
         
         # Load state dict
         checkpoint = torch.load(model_path, map_location=device)
         
         # Handle different checkpoint formats
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
+        if isinstance(checkpoint, dict):
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            elif 'model' in checkpoint:
+                state_dict = checkpoint['model']
+            else:
+                state_dict = checkpoint
         else:
             state_dict = checkpoint
         
@@ -193,10 +198,13 @@ def load_resnet_model(model_path, num_classes):
         checkpoint = torch.load(model_path, map_location=device)
         
         # Handle different checkpoint formats
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
+        if isinstance(checkpoint, dict):
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            elif 'model' in checkpoint:
+                state_dict = checkpoint['model']
+            else:
+                state_dict = checkpoint
         else:
             state_dict = checkpoint
             
@@ -216,6 +224,37 @@ def load_resnet_model(model_path, num_classes):
     except Exception as e:
         print(f"❌ Error loading ResNet model: {e}")
         return None
+
+def detect_model_architecture(model_path):
+    """Detect what architecture the model was trained with"""
+    try:
+        checkpoint = torch.load(model_path, map_location='cpu')
+        
+        if isinstance(checkpoint, dict):
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            elif 'model' in checkpoint:
+                state_dict = checkpoint['model']
+            else:
+                state_dict = checkpoint
+        else:
+            state_dict = checkpoint
+        
+        # Check keys to determine architecture
+        first_key = next(iter(state_dict.keys()))
+        
+        if 'efficientnet' in first_key.lower() or 'features.0.0.weight' in first_key:
+            return 'efficientnet'
+        elif 'resnet' in first_key.lower() or 'conv1.weight' in first_key:
+            return 'resnet'
+        elif 'features' in first_key:
+            return 'efficientnet'  # Likely efficientnet
+        else:
+            return 'unknown'
+            
+    except Exception as e:
+        print(f"❌ Error detecting architecture: {e}")
+        return 'unknown'
 
 def load_model():
     """Load the trained model"""
@@ -255,7 +294,7 @@ def load_model():
     except Exception as e:
         print(f"❌ Error loading proper medical model: {e}")
     
-    # Try to load the REAL model as fallback (EfficientNet)
+    # Try to load the REAL model as fallback
     try:
         model_path = 'models/real_pet_disease_model.pth'
         class_mapping_path = 'models/real_class_mapping.json'
@@ -272,14 +311,23 @@ def load_model():
             # Get number of classes
             num_classes = len(class_mapping['idx_to_label'])
             
-            # Try EfficientNet first (since your model was trained on it)
-            print("🔬 Trying EfficientNet architecture...")
-            model = load_efficientnet_model(model_path, num_classes)
+            # Detect architecture first
+            architecture = detect_model_architecture(model_path)
+            print(f"🔍 Detected architecture: {architecture}")
             
-            # If EfficientNet fails, try ResNet
-            if model is None:
-                print("🔄 Trying ResNet architecture...")
+            if architecture == 'efficientnet':
+                print("🔬 Loading as EfficientNet...")
+                model = load_efficientnet_model(model_path, num_classes)
+            elif architecture == 'resnet':
+                print("🔧 Loading as ResNet...")
                 model = load_resnet_model(model_path, num_classes)
+            else:
+                # Try both architectures
+                print("🔄 Architecture unknown, trying EfficientNet first...")
+                model = load_efficientnet_model(model_path, num_classes)
+                if model is None:
+                    print("🔄 Trying ResNet...")
+                    model = load_resnet_model(model_path, num_classes)
             
             if model is not None:
                 print("✅ Real model loaded successfully!")
@@ -393,11 +441,11 @@ def health_check():
     model_type = "None"
     if model is not None:
         if 'efficientnet' in str(model.__class__).lower():
-            model_type = "PROPER MEDICAL"
+            model_type = "EfficientNet"
         elif 'resnet' in str(model.__class__).lower():
-            model_type = "REAL"
+            model_type = "ResNet"
         else:
-            model_type = "DEMO"
+            model_type = "Unknown"
     
     return {
         "status": "healthy",
@@ -467,10 +515,13 @@ def model_diagnostic():
     try:
         if os.path.exists(model_path):
             checkpoint = torch.load(model_path, map_location='cpu')
+            architecture = detect_model_architecture(model_path)
+            
             return {
                 "file_exists": True,
                 "file_size": os.path.getsize(model_path),
                 "file_valid": verify_model_file(model_path),
+                "detected_architecture": architecture,
                 "checkpoint_keys": list(checkpoint.keys()) if isinstance(checkpoint, dict) else "Direct state_dict",
                 "model_loaded": model is not None,
                 "model_architecture": model.__class__.__name__ if model else "None"
