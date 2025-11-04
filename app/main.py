@@ -10,7 +10,6 @@ import json
 import os
 import random
 import requests
-import hashlib
 
 app = FastAPI(title="Pet Disease Classifier API", version="1.0.0")
 
@@ -27,7 +26,6 @@ app.add_middleware(
 model = None
 class_mapping = None
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-MODEL_LOADED = False
 
 # Image transformations
 transform = transforms.Compose([
@@ -37,279 +35,212 @@ transform = transforms.Compose([
                         std=[0.229, 0.224, 0.225])
 ])
 
-def get_file_hash(filepath):
-    """Calculate file hash to check integrity"""
-    try:
-        with open(filepath, 'rb') as f:
-            return hashlib.md5(f.read()).hexdigest()
-    except:
-        return None
-
 def download_model_files():
-    """Download model files with better error handling"""
+    """Download model files from Google Drive if they don't exist"""
     print("🔄 Starting model file download...")
     os.makedirs('models', exist_ok=True)
     
-    # Expected file sizes for validation
-    expected_sizes = {
-        'models/proper_medical_model.pth': 50000,  # ~50KB
-        'models/proper_class_mapping.json': 1000,  # ~1KB
-        'models/real_pet_disease_model.pth': 16000000,  # ~16MB
-        'models/real_class_mapping.json': 100000,  # ~100KB
+    # FIXED: Use direct download links for Google Drive
+    model_files = {
+        'models/proper_medical_model.pth': 'https://drive.google.com/uc?export=download&id=1x4l-FHJ10q8JD20Mxmaff-WILkIgQ_td',
+        'models/proper_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1PtWQq2Wk8IanKil6hsD_7RCG8IFnDcIe',
+        'models/real_pet_disease_model.pth': 'https://drive.google.com/uc?export=download&id=1p2_wSpeNoftlByCLDcxdfk3nOG8rw9pN',
+        'models/real_class_mapping.json': 'https://drive.google.com/uc?export=download&id=16WXwVVHAcny7yGTXeih9cPm4FL33p_SV'
     }
     
-    # Try multiple download sources
-    download_sources = [
-        {
-            'name': 'Google Drive Direct',
-            'urls': {
-                'models/proper_medical_model.pth': 'https://drive.google.com/uc?export=download&id=1x4l-FHJ10q8JD20Mxmaff-WILkIgQ_td',
-                'models/proper_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1PtWQq2Wk8IanKil6hsD_7RCG8IFnDcIe',
-                'models/real_pet_disease_model.pth': 'https://drive.google.com/uc?export=download&id=1p2_wSpeNoftlByCLDcxdfk3nOG8rw9pN',
-                'models/real_class_mapping.json': 'https://drive.google.com/uc?export=download&id=16WXwVVHAcny7yGTXeih9cPm4FL33p_SV'
-            }
-        }
-    ]
-    
-    all_files_valid = True
-    
-    for file_path, min_size in expected_sizes.items():
+    for file_path, url in model_files.items():
         print(f"📥 Checking {file_path}...")
-        
-        # Check if file exists and is valid
-        if (os.path.exists(file_path) and 
-            os.path.getsize(file_path) >= min_size):
-            file_size = os.path.getsize(file_path)
-            file_hash = get_file_hash(file_path)
-            print(f"   ✅ File exists ({file_size} bytes, hash: {file_hash[:8] if file_hash else 'N/A'})")
-            continue
-            
-        # File doesn't exist or is invalid, try to download
-        downloaded = False
-        for source in download_sources:
-            if file_path in source['urls']:
-                url = source['urls'][file_path]
-                print(f"   🔄 Downloading from {source['name']}...")
+        if not os.path.exists(file_path):
+            print(f"   Downloading from {url}...")
+            try:
+                # Handle Google Drive virus scan warning for large files
+                session = requests.Session()
                 
-                try:
-                    session = requests.Session()
-                    response = session.get(url, stream=True, timeout=30)
-                    
-                    if response.status_code == 200:
-                        with open(file_path, 'wb') as f:
-                            if 'real_pet_disease_model.pth' in file_path:
-                                # Stream large file
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                            else:
-                                f.write(response.content)
+                if 'real_pet_disease_model.pth' in file_path:
+                    # For large files, we need to handle the confirmation
+                    response = session.get(url, stream=True)
+                    # Check if we got the virus scan warning page
+                    if 'confirm=' in response.url:
+                        # Extract confirmation token and make new request
+                        confirm_token = None
+                        for key, value in response.cookies.items():
+                            if key.startswith('download_warning'):
+                                confirm_token = value
+                                break
                         
-                        # Verify download
-                        if os.path.exists(file_path) and os.path.getsize(file_path) >= min_size:
-                            file_size = os.path.getsize(file_path)
-                            file_hash = get_file_hash(file_path)
-                            print(f"   ✅ Downloaded successfully ({file_size} bytes, hash: {file_hash[:8] if file_hash else 'N/A'})")
-                            downloaded = True
-                            break
+                        if confirm_token:
+                            url = f"{url}&confirm={confirm_token}"
+                            response = session.get(url, stream=True)
+                
+                else:
+                    # For smaller files, direct download
+                    response = session.get(url)
+                
+                if response.status_code == 200:
+                    with open(file_path, 'wb') as f:
+                        if 'real_pet_disease_model.pth' in file_path:
+                            # Stream large file
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
                         else:
-                            print(f"   ❌ Downloaded file is too small")
-                            os.remove(file_path)  # Remove invalid file
-                    else:
-                        print(f"   ❌ Download failed: HTTP {response.status_code}")
+                            # Write small files directly
+                            f.write(response.content)
+                    
+                    file_size = os.path.getsize(file_path)
+                    print(f"   ✅ Downloaded {file_path} ({file_size} bytes)")
+                else:
+                    print(f"   ❌ Failed to download {file_path}: HTTP {response.status_code}")
+                    # Create empty file as placeholder
+                    with open(file_path, 'wb') as f:
+                        f.write(b'')
                         
-                except Exception as e:
-                    print(f"   ❌ Download error: {e}")
-        
-        if not downloaded:
-            print(f"   ❌ Failed to download {file_path}")
-            all_files_valid = False
-    
-    # List final file status
-    print("📁 Final file status:")
-    for file_path in expected_sizes.keys():
-        if os.path.exists(file_path):
-            size = os.path.getsize(file_path)
-            status = "✅ VALID" if size >= expected_sizes[file_path] else "❌ TOO SMALL"
-            print(f"   - {file_path}: {size} bytes - {status}")
+            except Exception as e:
+                print(f"   ❌ Error downloading {file_path}: {e}")
+                # Create empty file as placeholder
+                with open(file_path, 'wb') as f:
+                    f.write(b'')
         else:
-            print(f"   - {file_path}: ❌ MISSING")
+            file_size = os.path.getsize(file_path)
+            print(f"   ✅ {file_path} already exists ({file_size} bytes)")
     
-    return all_files_valid
-
-def create_simple_model():
-    """Create a simple model for testing"""
-    global model, class_mapping
-    
-    # Simple class mapping for common pet diseases
-    class_mapping = {
-        'label_to_idx': {
-            'healthy': 0,
-            'ear_infection': 1,
-            'skin_allergy': 2,
-            'dental_disease': 3,
-            'eye_infection': 4,
-            'parvovirus': 5
-        },
-        'idx_to_label': {
-            '0': 'healthy',
-            '1': 'ear_infection', 
-            '2': 'skin_allergy',
-            '3': 'dental_disease',
-            '4': 'eye_infection',
-            '5': 'parvovirus'
-        }
-    }
-    
-    # Create a simple model
-    model = models.resnet18(pretrained=True)
-    model.fc = nn.Linear(model.fc.in_features, len(class_mapping['label_to_idx']))
-    model.to(device)
-    model.eval()
-    
-    print("✅ Created simple pre-trained model for testing")
-    return True
+    # List all files in models directory
+    print("📁 Files in models directory:")
+    if os.path.exists('models'):
+        for file in os.listdir('models'):
+            file_path = os.path.join('models', file)
+            size = os.path.getsize(file_path)
+            print(f"   - {file}: {size} bytes")
+    else:
+        print("   Models directory doesn't exist!")
 
 def load_model():
-    """Load the trained model with better error handling"""
-    global model, class_mapping, MODEL_LOADED
+    """Load the trained model"""
+    global model, class_mapping
     
-    # Try to load proper medical model first
     try:
+        # Try to load the PROPER medical model first
         model_path = 'models/proper_medical_model.pth'
         class_mapping_path = 'models/proper_class_mapping.json'
         
-        if (os.path.exists(model_path) and 
-            os.path.exists(class_mapping_path) and
-            os.path.getsize(model_path) > 50000 and
-            os.path.getsize(class_mapping_path) > 1000):
+        # Check if files are valid (not empty)
+        if (os.path.exists(model_path) and os.path.getsize(model_path) > 100 and
+            os.path.exists(class_mapping_path) and os.path.getsize(class_mapping_path) > 10):
             
-            print("✅ Loading proper medical model...")
+            print("✅ Proper medical model found, loading...")
             
             # Load class mapping
             with open(class_mapping_path, 'r') as f:
                 class_mapping = json.load(f)
             
+            # Get number of classes
             num_classes = len(class_mapping['idx_to_label'])
             
-            # Create EfficientNet model
+            # Create model - Use EfficientNet for proper medical model
             model = models.efficientnet_b0(pretrained=False)
             model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+            print("🔬 Using EfficientNet (medical optimized)")
             
-            # Load weights
-            checkpoint = torch.load(model_path, map_location=device)
-            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
-            
+            # Load trained weights
+            model.load_state_dict(torch.load(model_path, map_location=device))
             model.to(device)
             model.eval()
             
-            print(f"✅ Proper medical model loaded! Classes: {list(class_mapping['label_to_idx'].keys())[:5]}...")
-            MODEL_LOADED = True
+            print("✅ Model loaded successfully!")
+            print(f"📊 Classes: {list(class_mapping['label_to_idx'].keys())}")
             return True
             
+        else:
+            print("❌ Proper medical model files are invalid or empty")
+            
     except Exception as e:
-        print(f"❌ Failed to load proper medical model: {e}")
+        print(f"❌ Error loading proper medical model: {e}")
     
-    # Try to load real model as fallback
+    # Try to load the REAL model as fallback
     try:
         model_path = 'models/real_pet_disease_model.pth'
         class_mapping_path = 'models/real_class_mapping.json'
         
-        if (os.path.exists(model_path) and 
-            os.path.exists(class_mapping_path) and
-            os.path.getsize(model_path) > 1000000 and
-            os.path.getsize(class_mapping_path) > 1000):
+        if (os.path.exists(model_path) and os.path.getsize(model_path) > 1000 and
+            os.path.exists(class_mapping_path) and os.path.getsize(class_mapping_path) > 10):
             
-            print("🔄 Loading real pet disease model...")
+            print("🔄 Falling back to real model...")
             
+            # Load class mapping
             with open(class_mapping_path, 'r') as f:
                 class_mapping = json.load(f)
             
+            # Get number of classes
             num_classes = len(class_mapping['idx_to_label'])
             
-            # Create ResNet model
+            # Create ResNet18 model
             model = models.resnet18(pretrained=False)
             model.fc = nn.Linear(model.fc.in_features, num_classes)
+            print("🔧 Using ResNet18 (real model)")
             
-            checkpoint = torch.load(model_path, map_location=device)
-            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
-            
+            # Load trained weights
+            model.load_state_dict(torch.load(model_path, map_location=device))
             model.to(device)
             model.eval()
             
-            print(f"✅ Real model loaded! Classes: {list(class_mapping['label_to_idx'].keys())[:5]}...")
-            MODEL_LOADED = True
+            print("✅ Real model loaded successfully!")
             return True
             
+        else:
+            print("❌ Real model files are invalid or empty")
+            
     except Exception as e:
-        print(f"❌ Failed to load real model: {e}")
+        print(f"❌ Error loading real model: {e}")
     
-    # Final fallback: create simple model
-    print("⚠️  Creating simple pre-trained model for basic functionality...")
-    if create_simple_model():
-        MODEL_LOADED = True
-        return True
-    
-    print("💥 All model loading attempts failed!")
-    MODEL_LOADED = False
+    print("⚠️  Running in demo mode - no valid model files found")
     return False
 
-def get_smart_demo_prediction(image_data, filename):
-    """Generate smarter demo predictions based on image analysis"""
-    try:
-        # Try to analyze the actual image
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        
-        # Simple image analysis (you can make this more sophisticated)
-        width, height = image.size
-        aspect_ratio = width / height
-        avg_brightness = sum(image.convert('L').getdata()) / (width * height)
-        
-        # Use image characteristics to influence predictions
-        image_hash = hash(image_data) % 100
-        
-    except:
-        # Fallback to filename-based prediction
-        image_hash = hash(filename) % 100
-    
-    # Real classes from your dataset
+def get_demo_prediction(filename):
+    """Generate demo predictions when model isn't loaded"""
+    # Use the actual classes from your real dataset
     classes = [
-        'healthy', 'ear_infection', 'skin_allergy', 'dental_disease', 
-        'eye_infection', 'parvovirus', 'kennel_cough', 'ringworm',
-        'mange', 'fleas_ticks'
+        'Dental Disease in Cat', 'Dental Disease in Dog', 'distemper', 
+        'Distemper in Dog', 'Ear Mites in Cat', 'ear_infection', 
+        'Eye Infection in Cat', 'Eye Infection in Dog', 'Feline Leukemia',
+        'Feline Panleukopenia', 'Fungal Infection in Cat', 'Fungal Infection in Dog',
+        'healthy', 'Hot Spots in Dog', 'Kennel Cough in Dog', 'kennel_cough',
+        'Mange in Dog', 'parvovirus', 'Parvovirus in Dog', 'Ringworm in Cat',
+        'Scabies in Cat', 'Skin Allergy in Cat', 'Skin Allergy in Dog',
+        'Tick Infestation in Dog', 'Urinary Tract Infection in Cat',
+        'Worm Infection in Cat', 'Worm Infection in Dog'
     ]
     
-    # Smarter prediction based on characteristics
-    if image_hash < 20:
-        primary_class = "healthy"
-        confidence = random.uniform(85, 95)
-    elif image_hash < 40:
-        primary_class = "ear_infection" 
-        confidence = random.uniform(75, 88)
-    elif image_hash < 60:
-        primary_class = "skin_allergy"
+    # Generate consistent "predictions" based on filename
+    file_hash = hash(filename) % 100
+    
+    if file_hash < 15:
+        primary_class = "Ear Mites in Cat"
+        confidence = random.uniform(75, 90)
+    elif file_hash < 30:
+        primary_class = "Parvovirus in Dog"
         confidence = random.uniform(70, 85)
-    elif image_hash < 80:
-        primary_class = "dental_disease"
+    elif file_hash < 45:
+        primary_class = "Skin Allergy in Dog"
         confidence = random.uniform(65, 80)
-    else:
-        primary_class = "eye_infection"
+    elif file_hash < 60:
+        primary_class = "Dental Disease in Cat"
         confidence = random.uniform(60, 75)
+    elif file_hash < 75:
+        primary_class = "Kennel Cough in Dog"
+        confidence = random.uniform(55, 70)
+    else:
+        primary_class = "healthy"
+        confidence = random.uniform(80, 95)
     
     # Create predictions list
     predictions = []
+    primary_idx = classes.index(primary_class)
+    
     for i, cls in enumerate(classes):
         if cls == primary_class:
             pred_confidence = confidence
         else:
-            # Make other predictions more realistic
-            pred_confidence = random.uniform(1, 30)
+            pred_confidence = random.uniform(1, 20)  # Lower confidence for other classes
         
         predictions.append({
             "class": cls,
@@ -317,110 +248,218 @@ def get_smart_demo_prediction(image_data, filename):
             "class_id": i
         })
     
-    # Sort by confidence and take top 5
+    # Sort by confidence (descending) and take top 5
     predictions.sort(key=lambda x: x['confidence'], reverse=True)
-    return predictions[:5], predictions[0]
+    predictions = predictions[:5]
+    
+    return predictions, predictions[0]
 
 @app.on_event("startup")
 async def startup_event():
     """Load model when API starts"""
     print("🚀 Starting Pet Disease Classifier API...")
-    
-    # Download model files
-    files_valid = download_model_files()
-    
-    # Try to load actual model
-    if files_valid:
-        load_model()
-    else:
-        print("💡 Model files not available, using demo mode")
-    
-    if not MODEL_LOADED:
-        print("🎭 Running in ENHANCED DEMO MODE")
-    else:
-        print("🎯 Running with TRAINED MODEL")
+    download_model_files()  # Download models first
+    load_model()  # Then load them
 
 @app.get("/")
 def root():
     return {
         "message": "Pet Disease Classifier API", 
         "status": "running",
-        "model_loaded": MODEL_LOADED,
-        "mode": "TRAINED_MODEL" if MODEL_LOADED else "ENHANCED_DEMO"
+        "model_loaded": model is not None,
+        "demo_mode": model is None
     }
 
-@app.get("/debug")
-def debug_info():
-    """Comprehensive debug information"""
-    model_files = {}
-    for file in ['proper_medical_model.pth', 'proper_class_mapping.json', 
-                 'real_pet_disease_model.pth', 'real_class_mapping.json']:
-        path = f'models/{file}'
-        model_files[file] = {
-            'exists': os.path.exists(path),
-            'size': os.path.getsize(path) if os.path.exists(path) else 0,
-            'expected_min_size': 50000 if '.pth' in file else 1000
-        }
+@app.get("/health")
+def health_check():
+    model_type = "None"
+    if model is not None:
+        if 'efficientnet' in str(model.__class__).lower():
+            model_type = "PROPER MEDICAL"
+        elif 'resnet' in str(model.__class__).lower():
+            model_type = "REAL"
+        else:
+            model_type = "DEMO"
     
     return {
-        "model_loaded": MODEL_LOADED,
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "model_type": model_type,
+        "demo_mode": model is None,
         "device": str(device),
-        "model_files": model_files,
-        "current_classes": list(class_mapping['label_to_idx'].keys()) if class_mapping else []
+        "classes_available": len(class_mapping['label_to_idx']) if class_mapping else 27
     }
+
+@app.get("/model-info")
+def model_info():
+    """Check model information"""
+    if model is None:
+        return {
+            "error": "No model loaded", 
+            "demo_mode": True,
+            "message": "Running in demo mode with simulated predictions"
+        }
+    
+    model_info = {
+        "model_type": model.__class__.__name__,
+        "model_architecture": "EfficientNet" if 'efficientnet' in str(model.__class__).lower() else "ResNet",
+        "num_classes": len(class_mapping['idx_to_label']) if class_mapping else 0,
+        "classes_loaded": list(class_mapping['label_to_idx'].keys()) if class_mapping else [],
+        "pretrained_used": False
+    }
+    
+    return {
+        "model_info": model_info,
+        "device": str(device),
+        "demo_mode": False
+    }
+
+@app.get("/debug-files")
+def debug_files():
+    """Debug file system"""
+    import os
+    
+    result = {
+        "current_directory": os.getcwd(),
+        "files_in_root": os.listdir('.'),
+        "models_dir_exists": os.path.exists('models'),
+        "demo_mode": model is None
+    }
+    
+    if os.path.exists('models'):
+        result["files_in_models"] = os.listdir('models')
+        # Check each model file
+        model_files = ['proper_medical_model.pth', 'proper_class_mapping.json', 
+                      'real_pet_disease_model.pth', 'real_class_mapping.json']
+        for file in model_files:
+            path = f'models/{file}'
+            result[file] = {
+                "exists": os.path.exists(path),
+                "size": os.path.getsize(path) if os.path.exists(path) else 0,
+                "valid": os.path.getsize(path) > 100 if os.path.exists(path) else False
+            }
+    
+    return result
+
+@app.get("/classes")
+def get_classes():
+    if class_mapping:
+        return {
+            "classes": list(class_mapping['label_to_idx'].keys()),
+            "demo_mode": False
+        }
+    else:
+        # Return the real classes from your dataset
+        return {
+            "classes": [
+                'Dental Disease in Cat', 'Dental Disease in Dog', 'distemper', 
+                'Distemper in Dog', 'Ear Mites in Cat', 'ear_infection', 
+                'Eye Infection in Cat', 'Eye Infection in Dog', 'Feline Leukemia',
+                'Feline Panleukopenia', 'Fungal Infection in Cat', 'Fungal Infection in Dog',
+                'healthy', 'Hot Spots in Dog', 'Kennel Cough in Dog', 'kennel_cough',
+                'Mange in Dog', 'parvovirus', 'Parvovirus in Dog', 'Ringworm in Cat',
+                'Scabies in Cat', 'Skin Allergy in Cat', 'Skin Allergy in Dog',
+                'Tick Infestation in Dog', 'Urinary Tract Infection in Cat',
+                'Worm Infection in Cat', 'Worm Infection in Dog'
+            ],
+            "demo_mode": True
+        }
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     """Predict disease from uploaded image"""
     
+    # Validate file type
     if not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="File must be an image")
+        raise HTTPException(status_code=400, detail="File must be an image (JPEG, PNG, etc.)")
     
     try:
-        contents = await file.read()
-        
-        # If model is properly loaded, use it
-        if MODEL_LOADED and model is not None:
-            image = Image.open(io.BytesIO(contents)).convert('RGB')
-            input_tensor = transform(image).unsqueeze(0).to(device)
-            
-            with torch.no_grad():
-                outputs = model(input_tensor)
-                probabilities = torch.nn.functional.softmax(outputs, dim=1)
-                top5_probs, top5_indices = torch.topk(probabilities, 5)
-            
-            predictions = []
-            for prob, idx in zip(top5_probs[0], top5_indices[0]):
-                class_name = class_mapping['idx_to_label'][str(idx.item())]
-                predictions.append({
-                    "class": class_name,
-                    "confidence": round(prob.item() * 100, 2),
-                    "class_id": int(idx.item())
-                })
-            
-            return {
-                "success": True,
-                "predictions": predictions,
-                "primary_prediction": predictions[0],
-                "file_name": file.filename,
-                "model_used": "TRAINED_MODEL",
-                "message": "Real model prediction"
-            }
-        
-        else:
-            # Use enhanced demo mode
-            predictions, primary_prediction = get_smart_demo_prediction(contents, file.filename)
+        # If model is not loaded, use demo mode
+        if model is None:
+            predictions, primary_prediction = get_demo_prediction(file.filename)
             
             return {
                 "success": True,
                 "predictions": predictions,
                 "primary_prediction": primary_prediction,
                 "file_name": file.filename,
-                "model_used": "ENHANCED_DEMO",
-                "message": "Enhanced demo mode - analyzing image characteristics"
+                "file_type": file.content_type,
+                "message": "Demo mode - using sample predictions",
+                "demo_mode": True
             }
+        
+        # Read and process image
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert('RGB')
+        input_tensor = transform(image).unsqueeze(0).to(device)
+        
+        # Make real prediction
+        with torch.no_grad():
+            outputs = model(input_tensor)
+            probabilities = torch.nn.functional.softmax(outputs, dim=1)
+            confidence, predicted_idx = torch.max(probabilities, 1)
+        
+        # Get top 5 predictions
+        top5_probs, top5_indices = torch.topk(probabilities, min(5, len(class_mapping['idx_to_label'])))
+        
+        predictions = []
+        for prob, idx in zip(top5_probs[0], top5_indices[0]):
+            class_name = class_mapping['idx_to_label'][str(idx.item())]
+            predictions.append({
+                "class": class_name,
+                "confidence": round(prob.item() * 100, 2),
+                "class_id": int(idx.item())
+            })
+        
+        # Determine message based on model type
+        model_type = "PROPER MEDICAL" if 'efficientnet' in str(model.__class__).lower() else "REAL"
+        message = f"{model_type} model prediction - trained on medical images"
+        
+        return {
+            "success": True,
+            "predictions": predictions,
+            "primary_prediction": predictions[0],
+            "file_name": file.filename,
+            "file_type": file.content_type,
+            "message": message,
+            "demo_mode": False
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-# ... keep your other endpoints the same ...
+@app.post("/predict-batch")
+async def predict_batch(files: list[UploadFile] = File(...)):
+    """Predict multiple images at once"""
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 files allowed")
+    
+    results = []
+    for file in files:
+        try:
+            # Use the predict function for each file
+            result = await predict(file)
+            results.append({
+                "file_name": file.filename,
+                "success": True,
+                "prediction": result["primary_prediction"],
+                "demo_mode": result.get("demo_mode", False)
+            })
+        except Exception as e:
+            results.append({
+                "file_name": file.filename,
+                "success": False,
+                "error": str(e),
+                "demo_mode": True
+            })
+    
+    return {
+        "success": True,
+        "total_files": len(files),
+        "results": results,
+        "demo_mode": model is None
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
