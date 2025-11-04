@@ -42,10 +42,10 @@ def download_model_files():
     
     # Your Google Drive direct download links
     model_files = {
-        'models/proper_medical_model.pth': 'https://drive.google.com/uc?export=download&id=1UZRn58UHXKFZ38661xNDW1WU-QrHWa3b',
+        'models/proper_medical_model.pth': 'https://drive.google.com/file/d/1x4l-FHJ10q8JD20Mxmaff-WILkIgQ_td/view?usp=drive_link',
         'models/proper_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1PtWQq2Wk8IanKil6hsD_7RCG8IFnDcIe',
         'models/real_pet_disease_model.pth': 'https://drive.google.com/uc?export=download&id=1p2_wSpeNoftlByCLDcxdfk3nOG8rw9pN',
-        'models/real_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1dw46v0t6sIbjVMAkCzuBIGDQL-KiWq-G'
+        'models/real_class_mapping.json': 'https://drive.google.com/file/d/16WXwVVHAcny7yGTXeih9cPm4FL33p_SV/view?usp=drive_link'
     }
     
     for file_path, url in model_files.items():
