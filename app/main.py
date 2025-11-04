@@ -8,10 +8,11 @@ from PIL import Image
 import io
 import json
 import os
-import random
-import requests
-import hashlib
-import numpy as np
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Pet Disease Classifier API", version="1.0.0")
 
@@ -29,7 +30,7 @@ model = None
 class_mapping = None
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Image transformations - MUST MATCH YOUR TRAINING
+# Image transformations
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -37,174 +38,200 @@ transform = transforms.Compose([
                         std=[0.229, 0.224, 0.225])
 ])
 
-def load_model():
-    """Load the trained model with proper error handling"""
+def load_model_safe():
+    """Load model with comprehensive error handling"""
     global model, class_mapping
     
     try:
-        model_path = 'models/proper_medical_model.pth'
-        class_mapping_path = 'models/proper_class_mapping.json'
-        
-        print("🔄 Loading model and class mapping...")
+        logger.info("🔄 Attempting to load model...")
         
         # Load class mapping
+        class_mapping_path = 'models/proper_class_mapping.json'
+        if not os.path.exists(class_mapping_path):
+            logger.error(f"❌ Class mapping file not found: {class_mapping_path}")
+            return False
+            
         with open(class_mapping_path, 'r') as f:
             class_mapping = json.load(f)
         
-        print(f"📊 Loaded {len(class_mapping['idx_to_label'])} classes")
-        
-        # Create model architecture - MUST MATCH YOUR TRAINING
-        num_classes = len(class_mapping['idx_to_label'])
-        model = models.efficientnet_b0(pretrained=False)
-        model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
-        
-        print("🔧 Model architecture created")
+        logger.info(f"📊 Loaded {len(class_mapping['idx_to_label'])} classes")
         
         # Load model weights
+        model_path = 'models/proper_medical_model.pth'
+        if not os.path.exists(model_path):
+            logger.error(f"❌ Model file not found: {model_path}")
+            return False
+        
+        # Get number of classes
+        num_classes = len(class_mapping['idx_to_label'])
+        
+        # Create model - use the same architecture as during training
+        logger.info("🔧 Creating EfficientNet model...")
+        model = models.efficientnet_b0(pretrained=False)
+        
+        # Update classifier for our number of classes
+        in_features = model.classifier[1].in_features
+        model.classifier[1] = nn.Linear(in_features, num_classes)
+        
+        logger.info(f"📐 Model configured for {num_classes} classes")
+        
+        # Load the checkpoint
+        logger.info("📦 Loading model weights...")
         checkpoint = torch.load(model_path, map_location=device)
-        print(f"📦 Checkpoint type: {type(checkpoint)}")
-        print(f"📦 Checkpoint keys: {checkpoint.keys() if isinstance(checkpoint, dict) else 'Not a dict'}")
         
         # Handle different checkpoint formats
         if isinstance(checkpoint, dict):
-            if 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
-                print("✅ Loaded from state_dict")
-            elif 'model_state_dict' in checkpoint:
+            if 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
-                print("✅ Loaded from model_state_dict")
+                logger.info("✅ Loaded from model_state_dict")
+            elif 'state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['state_dict'])
+                logger.info("✅ Loaded from state_dict")
             else:
-                # Try to load directly
+                # Try direct loading
                 model.load_state_dict(checkpoint)
-                print("✅ Loaded checkpoint directly")
+                logger.info("✅ Loaded checkpoint directly")
         else:
             model.load_state_dict(checkpoint)
-            print("✅ Loaded checkpoint directly")
+            logger.info("✅ Loaded checkpoint directly")
         
+        # Move model to device and set to eval mode
         model.to(device)
         model.eval()
         
-        print("🎯 Model loaded successfully!")
-        print(f"📋 Classes: {list(class_mapping['label_to_idx'].keys())}")
-        
+        logger.info("🎯 Model loaded successfully!")
         return True
         
     except Exception as e:
-        print(f"❌ Error loading model: {e}")
+        logger.error(f"❌ Model loading failed: {str(e)}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return False
-
-def analyze_image_characteristics(image):
-    """Analyze image to help with prediction accuracy"""
-    try:
-        # Convert to numpy array for analysis
-        img_array = np.array(image)
-        
-        characteristics = {
-            'size': image.size,
-            'mode': image.mode,
-            'brightness': np.mean(img_array),
-            'contrast': np.std(img_array),
-            'color_balance': {
-                'r': np.mean(img_array[:,:,0]) if len(img_array.shape) == 3 else 0,
-                'g': np.mean(img_array[:,:,1]) if len(img_array.shape) == 3 else 0,
-                'b': np.mean(img_array[:,:,2]) if len(img_array.shape) == 3 else 0,
-            }
-        }
-        return characteristics
-    except Exception as e:
-        return {'error': str(e)}
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model when API starts"""
-    print("🚀 Starting Pet Disease Classifier API...")
-    if not load_model():
-        print("💥 Failed to load model!")
+    """Initialize the application"""
+    logger.info("🚀 Starting Pet Disease Classifier API...")
+    
+    # Check if model files exist
+    required_files = [
+        'models/proper_medical_model.pth',
+        'models/proper_class_mapping.json'
+    ]
+    
+    for file_path in required_files:
+        if os.path.exists(file_path):
+            file_size = os.path.getsize(file_path)
+            logger.info(f"📁 {file_path}: {file_size} bytes")
+        else:
+            logger.error(f"❌ Missing file: {file_path}")
+    
+    # Load model
+    if not load_model_safe():
+        logger.error("💥 Failed to load model on startup")
     else:
-        print("✅ API ready with trained model!")
+        logger.info("✅ API started successfully with loaded model")
 
 @app.get("/")
-def root():
+async def root():
+    """Root endpoint"""
     return {
         "message": "Pet Disease Classifier API", 
         "status": "running",
         "model_loaded": model is not None,
-        "classes_loaded": len(class_mapping['idx_to_label']) if class_mapping else 0
+        "device": str(device)
     }
 
-@app.get("/model-debug")
-def model_debug():
-    """Detailed model debugging information"""
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy" if model is not None else "degraded",
+        "model_loaded": model is not None,
+        "device": str(device)
+    }
+
+@app.get("/model-info")
+async def model_info():
+    """Get model information"""
     if model is None:
-        return {"error": "Model not loaded"}
+        raise HTTPException(status_code=503, detail="Model not loaded")
     
-    # Test model with random input
-    try:
-        test_input = torch.randn(1, 3, 224, 224).to(device)
-        with torch.no_grad():
-            test_output = model(test_input)
-            test_probs = torch.nn.functional.softmax(test_output, dim=1)
-        
-        debug_info = {
-            "model_architecture": str(model.__class__.__name__),
-            "model_device": str(next(model.parameters()).device),
-            "num_classes": len(class_mapping['idx_to_label']),
-            "test_output_shape": list(test_output.shape),
-            "test_output_range": {
-                "min": float(test_output.min()),
-                "max": float(test_output.max()),
-                "mean": float(test_output.mean())
-            },
-            "test_probs_range": {
-                "min": float(test_probs.min()),
-                "max": float(test_probs.max()),
-                "sum": float(test_probs.sum())  # Should be ~1.0
-            },
-            "class_examples": list(class_mapping['idx_to_label'].values())[:10]
+    return {
+        "model_type": "EfficientNet-B0",
+        "num_classes": len(class_mapping['idx_to_label']),
+        "classes": list(class_mapping['label_to_idx'].keys()),
+        "device": str(device)
+    }
+
+@app.get("/debug")
+async def debug_info():
+    """Debug information"""
+    model_files = {}
+    for file_name in ['proper_medical_model.pth', 'proper_class_mapping.json']:
+        path = f'models/{file_name}'
+        exists = os.path.exists(path)
+        model_files[file_name] = {
+            'exists': exists,
+            'size': os.path.getsize(path) if exists else 0
         }
-        
-        return debug_info
-        
-    except Exception as e:
-        return {"error": f"Model test failed: {str(e)}"}
+    
+    return {
+        "model_loaded": model is not None,
+        "model_files": model_files,
+        "current_directory": os.getcwd(),
+        "files_in_models": os.listdir('models') if os.path.exists('models') else []
+    }
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """Predict disease from uploaded image with detailed debugging"""
+    """Predict disease from uploaded image"""
     
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded. Please try again later.")
+    
+    # Validate file type
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="File must be an image")
     
     try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert('RGB')
+        logger.info(f"📨 Received prediction request for: {file.filename}")
         
-        # Analyze image characteristics
-        img_analysis = analyze_image_characteristics(image)
-        print(f"📷 Image analysis: {img_analysis}")
+        # Read image
+        contents = await file.read()
+        if len(contents) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+        
+        # Open and validate image
+        try:
+            image = Image.open(io.BytesIO(contents)).convert('RGB')
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
+        
+        logger.info(f"📷 Image loaded: {image.size} {image.mode}")
         
         # Apply transformations
-        input_tensor = transform(image).unsqueeze(0).to(device)
-        print(f"🔧 Input tensor shape: {input_tensor.shape}")
-        print(f"🔧 Input tensor range: [{input_tensor.min():.3f}, {input_tensor.max():.3f}]")
+        try:
+            input_tensor = transform(image).unsqueeze(0).to(device)
+            logger.info(f"🔧 Input tensor shape: {input_tensor.shape}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Image processing failed: {str(e)}")
         
         # Make prediction
-        with torch.no_grad():
-            outputs = model(input_tensor)
-            probabilities = torch.nn.functional.softmax(outputs, dim=1)
+        try:
+            with torch.no_grad():
+                outputs = model(input_tensor)
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)
+                
+                # Get top 5 predictions
+                top5_probs, top5_indices = torch.topk(probabilities, min(5, len(class_mapping['idx_to_label'])))
             
-            print(f"📊 Raw outputs range: [{outputs.min():.3f}, {outputs.max():.3f}]")
-            print(f"📊 Probabilities range: [{probabilities.min():.3f}, {probabilities.max():.3f}]")
-            print(f"📊 Probabilities sum: {probabilities.sum().item():.3f}")
+            logger.info(f"📊 Prediction completed. Top confidence: {top5_probs[0][0].item()*100:.2f}%")
             
-            # Get top 5 predictions
-            top5_probs, top5_indices = torch.topk(probabilities, 5)
-            
-            print(f"🏆 Top 5 probabilities: {[f'{p*100:.2f}%' for p in top5_probs[0].tolist()]}")
-            print(f"🏆 Top 5 indices: {top5_indices[0].tolist()}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Model prediction failed: {str(e)}")
         
+        # Format predictions
         predictions = []
         for prob, idx in zip(top5_probs[0], top5_indices[0]):
             class_name = class_mapping['idx_to_label'][str(idx.item())]
@@ -215,100 +242,75 @@ async def predict(file: UploadFile = File(...)):
                 "confidence": round(confidence, 2),
                 "class_id": int(idx.item())
             })
-            
-            print(f"🔍 Prediction: {class_name} - {confidence:.2f}%")
         
-        # Check if predictions make sense
-        max_confidence = predictions[0]['confidence']
-        confidence_gap = max_confidence - (predictions[1]['confidence'] if len(predictions) > 1 else 0)
-        
-        prediction_quality = "HIGH" if max_confidence > 70 and confidence_gap > 20 else "LOW" if max_confidence < 30 else "MEDIUM"
+        # Log top prediction
+        top_pred = predictions[0]
+        logger.info(f"🏆 Top prediction: {top_pred['class']} ({top_pred['confidence']}%)")
         
         return {
             "success": True,
             "predictions": predictions,
             "primary_prediction": predictions[0],
             "file_name": file.filename,
-            "image_analysis": img_analysis,
-            "prediction_quality": prediction_quality,
-            "debug_info": {
-                "max_confidence": max_confidence,
-                "confidence_gap": confidence_gap,
-                "top_confidence": [p['confidence'] for p in predictions[:3]]
-            }
+            "file_type": file.content_type
         }
         
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        print(f"❌ Prediction error: {e}")
+        logger.error(f"❌ Unexpected error during prediction: {str(e)}")
         import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/predict-batch")
-async def predict_batch(files: list[UploadFile] = File(...)):
-    """Predict multiple images with comparison"""
-    if len(files) > 5:
-        raise HTTPException(status_code=400, detail="Maximum 5 files allowed")
+@app.post("/simple-predict")
+async def simple_predict(file: UploadFile = File(...)):
+    """Simplified prediction endpoint for testing"""
+    if model is None:
+        return {
+            "success": False,
+            "error": "Model not loaded",
+            "demo_mode": True,
+            "prediction": {
+                "class": "healthy",
+                "confidence": 85.0,
+                "message": "Demo mode - model not loaded"
+            }
+        }
     
-    results = []
-    for file in files:
-        try:
-            result = await predict(file)
-            results.append({
-                "file_name": file.filename,
-                "success": True,
-                "prediction": result["primary_prediction"],
-                "prediction_quality": result["prediction_quality"]
-            })
-        except Exception as e:
-            results.append({
-                "file_name": file.filename,
-                "success": False,
-                "error": str(e)
-            })
-    
-    return {
-        "success": True,
-        "total_files": len(files),
-        "results": results
-    }
-
-@app.get("/test-prediction")
-async def test_prediction():
-    """Test endpoint with a sample prediction"""
     try:
-        # Create a random test image
-        test_image = Image.new('RGB', (224, 224), color='red')
-        
-        # Transform and predict
-        input_tensor = transform(test_image).unsqueeze(0).to(device)
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert('RGB')
+        input_tensor = transform(image).unsqueeze(0).to(device)
         
         with torch.no_grad():
             outputs = model(input_tensor)
             probabilities = torch.nn.functional.softmax(outputs, dim=1)
-            top5_probs, top5_indices = torch.topk(probabilities, 5)
+            top_prob, top_idx = torch.max(probabilities, 1)
         
-        predictions = []
-        for prob, idx in zip(top5_probs[0], top5_indices[0]):
-            class_name = class_mapping['idx_to_label'][str(idx.item())]
-            predictions.append({
-                "class": class_name,
-                "confidence": round(prob.item() * 100, 2),
-                "class_id": int(idx.item())
-            })
+        class_name = class_mapping['idx_to_label'][str(top_idx.item())]
+        confidence = top_prob.item() * 100
         
         return {
-            "test_type": "random_red_image",
-            "predictions": predictions,
-            "model_output_stats": {
-                "output_min": float(outputs.min()),
-                "output_max": float(outputs.max()),
-                "prob_sum": float(probabilities.sum())
+            "success": True,
+            "prediction": {
+                "class": class_name,
+                "confidence": round(confidence, 2)
             }
         }
         
     except Exception as e:
-        return {"error": f"Test failed: {str(e)}"}
+        return {
+            "success": False,
+            "error": str(e),
+            "demo_mode": True,
+            "prediction": {
+                "class": "unknown",
+                "confidence": 0.0,
+                "message": f"Error: {str(e)}"
+            }
+        }
 
 if __name__ == "__main__":
     import uvicorn
