@@ -1,6 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -38,31 +37,45 @@ transform = transforms.Compose([
 
 def download_model_files():
     """Download model files from Google Drive if they don't exist"""
-    os.makedirs('model', exist_ok=True)
+    print("🔄 Starting model file download...")
+    os.makedirs('models', exist_ok=True)  # Changed to 'models' to match local
     
     # Your Google Drive direct download links
     model_files = {
-        'model/proper_medical_model.pth': 'https://drive.google.com/uc?export=download&id=1UZRn58UHXKFZ38661xNDW1WU-QrHWa3b',
-        'model/proper_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1PtWQq2Wk8IanKil6hsD_7RCG8IFnDcIe',
-        'model/real_pet_disease_model.pth': 'https://drive.google.com/uc?export=download&id=1p2_wSpeNoftlByCLDcxdfk3nOG8rw9pN',
-        'model/real_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1dw46v0t6sIbjVMAkCzuBIGDQL-KiWq-G'
+        'models/proper_medical_model.pth': 'https://drive.google.com/uc?export=download&id=1UZRn58UHXKFZ38661xNDW1WU-QrHWa3b',
+        'models/proper_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1PtWQq2Wk8IanKil6hsD_7RCG8IFnDcIe',
+        'models/real_pet_disease_model.pth': 'https://drive.google.com/uc?export=download&id=1p2_wSpeNoftlByCLDcxdfk3nOG8rw9pN',
+        'models/real_class_mapping.json': 'https://drive.google.com/uc?export=download&id=1dw46v0t6sIbjVMAkCzuBIGDQL-KiWq-G'
     }
     
     for file_path, url in model_files.items():
+        print(f"📥 Checking {file_path}...")
         if not os.path.exists(file_path):
-            print(f"📥 Downloading {file_path}...")
+            print(f"   Downloading from {url}...")
             try:
                 response = requests.get(url)
                 if response.status_code == 200:
                     with open(file_path, 'wb') as f:
                         f.write(response.content)
-                    print(f"✅ Downloaded {file_path} ({len(response.content)} bytes)")
+                    file_size = os.path.getsize(file_path)
+                    print(f"   ✅ Downloaded {file_path} ({file_size} bytes)")
                 else:
-                    print(f"❌ Failed to download {file_path}: HTTP {response.status_code}")
+                    print(f"   ❌ Failed to download {file_path}: HTTP {response.status_code}")
             except Exception as e:
-                print(f"❌ Error downloading {file_path}: {e}")
+                print(f"   ❌ Error downloading {file_path}: {e}")
         else:
-            print(f"✅ {file_path} already exists")
+            file_size = os.path.getsize(file_path)
+            print(f"   ✅ {file_path} already exists ({file_size} bytes)")
+    
+    # List all files in models directory
+    print("📁 Files in models directory:")
+    if os.path.exists('models'):
+        for file in os.listdir('models'):
+            file_path = os.path.join('models', file)
+            size = os.path.getsize(file_path)
+            print(f"   - {file}: {size} bytes")
+    else:
+        print("   Models directory doesn't exist!")
 
 def load_model():
     """Load the trained model"""
@@ -70,21 +83,21 @@ def load_model():
     
     try:
         # Try to load the PROPER medical model first
-        model_path = 'model/proper_medical_model.pth'
-        class_mapping_path = 'model/proper_class_mapping.json'
+        model_path = 'models/proper_medical_model.pth'  # Changed to 'models'
+        class_mapping_path = 'models/proper_class_mapping.json'  # Changed to 'models'
         
         # If proper model doesn't exist, fall back to real model
         if not os.path.exists(model_path):
-            model_path = 'model/real_pet_disease_model.pth'
-            class_mapping_path = 'model/real_class_mapping.json'
+            model_path = 'models/real_pet_disease_model.pth'  # Changed to 'models'
+            class_mapping_path = 'models/real_class_mapping.json'  # Changed to 'models'
             print("⚠️  Proper medical model not found, using real model")
         else:
             print("✅ Proper medical model found, loading...")
         
         # If real model doesn't exist, fall back to demo model
         if not os.path.exists(model_path):
-            model_path = 'model/pet_disease_model.pth'
-            class_mapping_path = 'model/class_mapping.json'
+            model_path = 'models/pet_disease_model.pth'  # Changed to 'models'
+            class_mapping_path = 'models/class_mapping.json'  # Changed to 'models'
             print("⚠️  Real model not found, using demo model")
         
         # Check if model files exist
@@ -101,12 +114,12 @@ def load_model():
         
         # Create model - Use EfficientNet for proper medical model
         if 'proper' in model_path:
-            model = models.efficientnet_b0(pretrained=False)
+            model = models.efficientnet_b0(pretrained=False)  # FIXED: pretrained=False like local
             model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
             print("🔬 Using EfficientNet (medical optimized)")
         else:
             # Fallback to ResNet18 for other models
-            model = models.resnet18(pretrained=False)
+            model = models.resnet18(pretrained=False)  # FIXED: pretrained=False like local
             model.fc = nn.Linear(model.fc.in_features, num_classes)
             print("🔧 Using ResNet18 (compatible)")
         
@@ -200,73 +213,13 @@ async def startup_event():
     download_model_files()  # Download models first
     load_model()  # Then load them
 
-@app.get("/", response_class=HTMLResponse)
-def root(request: Request):
-    """HTML page with clickable links to all endpoints"""
-    base_url = str(request.base_url).rstrip('/')
-    
-    html_content = f"""
-    <html>
-        <head>
-            <title>Pet Disease Classifier API</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; }}
-                .container {{ max-width: 800px; margin: 0 auto; }}
-                .endpoint {{ background: #f5f5f5; padding: 15px; margin: 10px 0; border-radius: 5px; }}
-                a {{ color: #007bff; text-decoration: none; }}
-                a:hover {{ text-decoration: underline; }}
-                .demo {{ background: #fff3cd; padding: 10px; border-radius: 5px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🐾 Pet Disease Classifier API</h1>
-                <p>Status: <strong>Running</strong> | Model: <strong>{'Loaded' if model is not None else 'Demo Mode'}</strong></p>
-                
-                <div class="demo">
-                    <h3>🚨 IMPORTANT: Your App is Running!</h3>
-                    <p>Your Railway URL is: <strong>{base_url}</strong></p>
-                    <p>Bookmark this page! Share these links:</p>
-                </div>
-                
-                <h2>📋 Available Endpoints:</h2>
-                
-                <div class="endpoint">
-                    <h3><a href="{base_url}/health" target="_blank">Health Check</a></h3>
-                    <p>Check API status and model info</p>
-                    <code>GET {base_url}/health</code>
-                </div>
-                
-                <div class="endpoint">
-                    <h3><a href="{base_url}/debug-files" target="_blank">Debug Files</a></h3>
-                    <p>Check what model files exist in deployment</p>
-                    <code>GET {base_url}/debug-files</code>
-                </div>
-                
-                <div class="endpoint">
-                    <h3><a href="{base_url}/classes" target="_blank">Get Classes</a></h3>
-                    <p>See all available disease classes</p>
-                    <code>GET {base_url}/classes</code>
-                </div>
-                
-                <div class="endpoint">
-                    <h3>Predict Endpoint</h3>
-                    <p>Upload an image for disease prediction (use Postman or curl)</p>
-                    <code>POST {base_url}/predict</code>
-                </div>
-                
-                <h2>🔧 Quick Test:</h2>
-                <p>Copy and test these URLs:</p>
-                <ul>
-                    <li><a href="{base_url}/health" target="_blank">{base_url}/health</a></li>
-                    <li><a href="{base_url}/debug-files" target="_blank">{base_url}/debug-files</a></li>
-                    <li><a href="{base_url}/classes" target="_blank">{base_url}/classes</a></li>
-                </ul>
-            </div>
-        </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
+@app.get("/")
+def root():
+    return {
+        "message": "Pet Disease Classifier API", 
+        "status": "running",
+        "model_loaded": model is not None
+    }
 
 @app.get("/health")
 def health_check():
@@ -287,55 +240,48 @@ def health_check():
         "classes_available": len(class_mapping['label_to_idx']) if class_mapping else 27
     }
 
-@app.get("/debug-files")
-def debug_files():
-    """Check if model files exist in deployment"""
-    import os
+@app.get("/model-info")
+def model_info():
+    """Check model information"""
+    if model is None:
+        return {"error": "No model loaded"}
     
-    files_to_check = [
-        'model/proper_medical_model.pth',
-        'model/proper_class_mapping.json', 
-        'model/real_pet_disease_model.pth',
-        'model/real_class_mapping.json',
-        'model/pet_disease_model.pth',
-        'model/class_mapping.json'
-    ]
-    
-    existing_files = {}
-    for file_path in files_to_check:
-        exists = os.path.exists(file_path)
-        existing_files[file_path] = exists
-        if exists:
-            try:
-                size = os.path.getsize(file_path)
-                existing_files[f"{file_path}_size"] = f"{size} bytes"
-            except:
-                existing_files[f"{file_path}_size"] = "unknown"
-    
-    # Check current directory structure
-    current_dir_files = []
-    models_dir_files = []
-    
-    try:
-        current_dir_files = os.listdir('.')
-    except:
-        current_dir_files = "Cannot list current directory"
-    
-    try:
-        if os.path.exists('model'):
-            models_dir_files = os.listdir('model')
-        else:
-            models_dir_files = "model folder does not exist"
-    except:
-        models_dir_files = "Cannot list model directory"
+    model_info = {
+        "model_type": model.__class__.__name__,
+        "model_architecture": "EfficientNet" if 'efficientnet' in str(model.__class__).lower() else "ResNet",
+        "num_classes": len(class_mapping['idx_to_label']) if class_mapping else 0,
+        "classes_loaded": list(class_mapping['label_to_idx'].keys()) if class_mapping else [],
+        "pretrained_used": False  # This should now be False to match local
+    }
     
     return {
-        "current_working_dir": os.getcwd(),
-        "files_in_current_dir": current_dir_files,
-        "files_in_model_dir": models_dir_files,
-        "file_existence": existing_files,
-        "app_running_in_demo_mode": model is None
+        "model_info": model_info,
+        "device": str(device)
     }
+
+@app.get("/debug-files")
+def debug_files():
+    """Debug file system"""
+    import os
+    
+    result = {
+        "current_directory": os.getcwd(),
+        "files_in_root": os.listdir('.'),
+        "models_dir_exists": os.path.exists('models'),
+    }
+    
+    if os.path.exists('models'):
+        result["files_in_models"] = os.listdir('models')
+        # Check each model file
+        model_files = ['proper_medical_model.pth', 'proper_class_mapping.json']
+        for file in model_files:
+            path = f'models/{file}'
+            result[file] = {
+                "exists": os.path.exists(path),
+                "size": os.path.getsize(path) if os.path.exists(path) else 0
+            }
+    
+    return result
 
 @app.get("/classes")
 def get_classes():
